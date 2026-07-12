@@ -1,3 +1,4 @@
 package github.com/sjqtentacles/sml-bech32
 require {
+  github.com/sjqtentacles/sml-check
 }

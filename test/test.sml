@@ -170,6 +170,117 @@ struct
       val () = Harness.check "v0 32-byte prog ok"
                              (isSome (SegwitAddr.encode "bc" 0 prog32))
 
+      (* ---- Properties (sml-check) ----
+         decode-of-encode is the central law for this codec: for any valid
+         (hrp, data) pair, decoding what we just encoded must return the
+         original hrp and data. Fixed vector tests above only cover a
+         handful of hand-picked addresses; these properties fuzz across
+         random hrps, random 5-bit data words, and random SegwitAddr
+         programs. *)
+      val () = Harness.section "Properties (sml-check)"
+
+      (* hrp: 1..20 lowercase alphanumeric chars (Bech32.decode lowercases
+         the whole string before comparing, and rejects mixed case, so a
+         round-trip needs an hrp that is already lowercase). *)
+      val hrpAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+      val genHrp : string Check.gen =
+        Check.map String.implode
+          (Check.resize 20
+             (Check.nonEmptyListOf
+                (Check.map (fn i => String.sub (hrpAlphabet, i))
+                   (Check.choose (0, String.size hrpAlphabet - 1)))))
+
+      (* data: a string of 5-bit words (chars valued 0..31), length 0..40 -
+         Bech32.encode indexes its 32-symbol charset directly by each data
+         char's ordinal, so values outside 0..31 would crash rather than
+         fail gracefully. *)
+      val genData : string Check.gen =
+        Check.map (String.implode o List.map Char.chr)
+          (Check.resize 40 (Check.listOf (Check.choose (0, 31))))
+
+      fun showHrpData (hrp, data) =
+        "hrp=\"" ^ hrp ^ "\" data=[" ^
+        String.concatWith "," (List.map (Int.toString o Char.ord) (String.explode data))
+        ^ "]"
+
+      val genHrpData = Check.tuple2 (genHrp, genData)
+
+      val () =
+        Harness.check "prop: Bech32 encode/decode round-trips"
+          (case Check.quickCheck
+                  (Check.forAll genHrpData showHrpData
+                     (fn (hrp, data) =>
+                        case Bech32.decode (Bech32.encode hrp data) of
+                            SOME {hrp = h, data = d} => h = hrp andalso d = data
+                          | NONE => false)) of
+               Check.Passed _ => true
+             | Check.Failed _ => false)
+
+      val () =
+        Harness.check "prop: Bech32m encode/decode round-trips"
+          (case Check.quickCheck
+                  (Check.forAll genHrpData showHrpData
+                     (fn (hrp, data) =>
+                        case Bech32.decodeM (Bech32.encodeM hrp data) of
+                            SOME {hrp = h, data = d} => h = hrp andalso d = data
+                          | NONE => false)) of
+               Check.Passed _ => true
+             | Check.Failed _ => false)
+
+      val () =
+        Harness.check "prop: a Bech32m address is always rejected by plain decode"
+          (case Check.quickCheck
+                  (Check.forAll genHrpData showHrpData
+                     (fn (hrp, data) => not (isSome (Bech32.decode (Bech32.encodeM hrp data))))) of
+               Check.Passed _ => true
+             | Check.Failed _ => false)
+
+      (* SegwitAddr round-trip: witness version 0..16, program length 2..40
+         (exactly 20 or 32 when witver = 0, per BIP-141/173). *)
+      val genSegwit : (int * string) Check.gen =
+        Check.bind (Check.choose (0, 16)) (fn witver =>
+          Check.bind
+            (if witver = 0 then Check.elements [20, 32] else Check.choose (2, 40))
+            (fn progLen =>
+               Check.map
+                 (fn bytes => (witver, String.implode (List.map Char.chr bytes)))
+                 (Check.listOfLen progLen (Check.choose (0, 255)))))
+
+      fun showSegwit (witver, prog) =
+        "witver=" ^ Int.toString witver ^ " proglen=" ^ Int.toString (String.size prog)
+
+      val () =
+        Harness.check "prop: SegwitAddr encode/decode round-trips"
+          (case Check.quickCheck
+                  (Check.forAll genSegwit showSegwit
+                     (fn (witver, prog) =>
+                        case SegwitAddr.encode "bc" witver prog of
+                            NONE => false
+                          | SOME addr =>
+                              (case SegwitAddr.decode addr of
+                                   SOME {hrp, version, program} =>
+                                     hrp = "bc" andalso version = witver andalso program = prog
+                                 | NONE => false))) of
+               Check.Passed _ => true
+             | Check.Failed _ => false)
+
+      (* Format invariant: the data+checksum portion of a Bech32 address
+         (everything after "hrp1") only ever uses the 32-symbol charset. *)
+      val bech32Charset = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+      val () =
+        Harness.check "prop: encoded data+checksum stays within the Bech32 charset"
+          (case Check.quickCheck
+                  (Check.forAll genHrpData showHrpData
+                     (fn (hrp, data) =>
+                        let
+                          val addr = Bech32.encode hrp data
+                          val tail = String.extract (addr, String.size hrp + 1, NONE)
+                        in
+                          List.all (fn c => Char.contains bech32Charset c) (String.explode tail)
+                        end)) of
+               Check.Passed _ => true
+             | Check.Failed _ => false)
+
     in
       Harness.run ()
     end
