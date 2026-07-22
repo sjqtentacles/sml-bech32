@@ -1,5 +1,7 @@
 # sml-bech32
 
+[![CI](https://github.com/sjqtentacles/sml-bech32/actions/workflows/ci.yml/badge.svg)](https://github.com/sjqtentacles/sml-bech32/actions/workflows/ci.yml)
+
 Bech32 and Bech32m encoding with SegwitAddr support in pure Standard ML (BIP-173/350)
 
 ## Installation
